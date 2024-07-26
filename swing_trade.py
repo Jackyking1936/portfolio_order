@@ -24,16 +24,16 @@ class MainApp(QWidget):
 
         layout_table = QHBoxLayout()
         # 庫存表表頭
-        self.old_pos_header = ['股票名稱', '股票代號', '類別', '庫存股數', '庫存均價', '現價', '停損', '停利', '損益試算', '獲利率%']
+        self.old_cur_header = ['股票名稱', '股票代號', '類別', '庫存股數', '庫存均價', '現價', '停損', '停利', '損益試算', '獲利率%']
         self.new_pos_header = ['股票名稱', '股票代號', '類別', '庫存股數', '庫存均價', '現價', '停損', '停利', '損益試算', '獲利率%']
         
-        self.old_pos_table = QTableWidget(0, len(self.old_pos_header))
-        self.old_pos_table.setHorizontalHeaderLabels([f'{item}' for item in self.old_pos_header])
+        self.old_cur_table = QTableWidget(0, len(self.old_cur_header))
+        self.old_cur_table.setHorizontalHeaderLabels([f'{item}' for item in self.old_cur_header])
 
         self.new_pos_table = QTableWidget(0, len(self.new_pos_header))
         self.new_pos_table.setHorizontalHeaderLabels([f'{item}' for item in self.new_pos_header])
 
-        layout_table.addWidget(self.old_pos_table)
+        layout_table.addWidget(self.old_cur_table)
         layout_table.addWidget(self.new_pos_table)
         
         # 整個設定區layout
