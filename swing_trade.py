@@ -93,6 +93,12 @@ class MainApp(QWidget):
         layout.addLayout(layout_condition)
         layout.addLayout(layout_sim)
         layout.addWidget(self.log_text)
+
+        layout.setStretchFactor(layout_table, 6)
+        layout.setStretchFactor(layout_condition, 2)
+        layout.setStretchFactor(layout_sim, 1)
+        layout.setStretchFactor(self.log_text, 3)
+
         self.setLayout(layout)
 
         self.print_log("login success, 現在使用帳號: {}".format(self.active_account.account))
