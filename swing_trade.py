@@ -1,11 +1,40 @@
 from login_gui import LoginForm
 
 import sys
-from fubon_neo.sdk import FubonSDK
+import json
+import math
+from fubon_neo.sdk import FubonSDK, Mode, Order
+from fubon_neo.constant import TimeInForce, OrderType, PriceType, MarketType, BSAction
+import pandas as pd
+from pathlib import Path
+import pickle
 
-from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QGridLayout, QLabel, QLineEdit, QPushButton, QSizePolicy, QPlainTextEdit
+from PySide6.QtWidgets import QTableWidgetItem, QFileDialog, QApplication, QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QGridLayout, QLabel, QLineEdit, QPushButton, QSizePolicy, QPlainTextEdit
 from PySide6.QtGui import QIcon, QTextCursor
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal, QObject
+
+# 仿FilledData的物件
+class fake_filled_data():
+    date="2023/09/15"
+    branch_no="6460"
+    account="9809789"
+    order_no="bA422"
+    stock_no="00900"
+    buy_sell=BSAction.Sell
+    filled_no="00000000001"
+    filled_avg_price=35.2
+    filled_qty=1000
+    filled_price=35.2
+    order_type=OrderType.Stock
+    filled_time="10:31:00.931"
+    user_def=None
+
+class Communicate(QObject):
+    # 定義一個帶參數的信號
+    print_log_signal = Signal(str)
+    new_table_item_update_signal = Signal(int, int, str)
+    cur_table_item_update_signal = Signal(int, int, str)
+    
 
 class MainApp(QWidget):
     def __init__(self, active_account):
@@ -14,26 +43,26 @@ class MainApp(QWidget):
         self.active_account = active_account
 
         my_icon = QIcon()
-        my_icon.addFile('swing.png')
+        my_icon.addFile('swing.png') 
         self.setWindowIcon(my_icon)
         self.setWindowTitle("Python波段單下單機")
-        self.resize(1200, 600)
+        self.resize(1200, 700)
 
         # 製作上下排列layout上為庫存表，下為log資訊
         layout = QVBoxLayout()
 
         layout_table = QHBoxLayout()
         # 庫存表表頭
-        self.old_cur_header = ['股票名稱', '股票代號', '類別', '庫存股數', '庫存均價', '現價', '損益試算', '獲利率%']
+        self.cur_pos_header = ['股票名稱', '股票代號', '庫存股數', '庫存均價', '現價', '損益試算', '獲利率%', '委託數量', '委託價格', '成交數量', '成交價格']
         self.new_pos_header = ['股票名稱', '股票代號', '現價', '委託數量', '委託價格', '成交數量', '成交價格']
         
-        self.old_cur_table = QTableWidget(0, len(self.old_cur_header))
-        self.old_cur_table.setHorizontalHeaderLabels([f'{item}' for item in self.old_cur_header])
+        self.cur_pos_table = QTableWidget(0, len(self.cur_pos_header))
+        self.cur_pos_table.setHorizontalHeaderLabels([f'{item}' for item in self.cur_pos_header])
 
         self.new_pos_table = QTableWidget(0, len(self.new_pos_header))
         self.new_pos_table.setHorizontalHeaderLabels([f'{item}' for item in self.new_pos_header])
 
-        layout_table.addWidget(self.old_cur_table)
+        layout_table.addWidget(self.cur_pos_table)
         layout_table.addWidget(self.new_pos_table)
         
         # 整個設定區layout
@@ -49,7 +78,7 @@ class MainApp(QWidget):
         layout_parameter.addWidget(label_total_amount, 1, 0)
         label_total_amount.setAlignment(Qt.AlignRight)
         self.lineEdit_default_total_amount = QLineEdit()
-        self.lineEdit_default_total_amount.setText('100')
+        self.lineEdit_default_total_amount.setText('10')
         layout_parameter.addWidget(self.lineEdit_default_total_amount, 1, 1)
         label_total_amount_post = QLabel('萬元, ')
         layout_parameter.addWidget(label_total_amount_post, 1, 2)
@@ -57,46 +86,80 @@ class MainApp(QWidget):
         label_file_path = QLabel('目標清單路徑:')
         layout_parameter.addWidget(label_file_path, 0, 3)
         self.lineEdit_default_file_path = QLineEdit()
-        layout_parameter.addWidget(self.lineEdit_default_file_path, 0, 4)
-        folder_btn = QPushButton('')
-        folder_btn.setIcon(QIcon('folder.png'))
-        layout_parameter.addWidget(folder_btn, 0, 5)
+        layout_parameter.addWidget(self.lineEdit_default_file_path, 0, 4, 1, 4)
+        self.folder_btn = QPushButton('')
+        self.folder_btn.setIcon(QIcon('folder.png'))
+        layout_parameter.addWidget(self.folder_btn, 0, 8)
 
-        label_est_sell = QLabel('預估賣出金額:')
-        layout_parameter.addWidget(label_est_sell, 1, 3)
-        self.lineEdit_default_est_sell = QLineEdit()
-        self.lineEdit_default_est_sell.setReadOnly(True)
-        layout_parameter.addWidget(self.lineEdit_default_est_sell, 1, 4)
-        label_est_sell_post = QLabel('元')
-        layout_parameter.addWidget(label_est_sell_post, 1, 5)
+        self.read_csv_btn = QPushButton('')
+        self.read_csv_btn.setText('讀取清單')
+        self.read_csv_btn.setStyleSheet("QPushButton { font-weight: bold; }")
+        layout_parameter.addWidget(self.read_csv_btn, 0, 9)
+
+        self.simulate_cal_btn = QPushButton('')
+        self.simulate_cal_btn.setText('下單試算')
+        self.simulate_cal_btn.setStyleSheet("QPushButton { font-weight: bold; }")
+        layout_parameter.addWidget(self.simulate_cal_btn, 0, 10)
 
         label_est_buy = QLabel('預估買進金額:')
-        layout_parameter.addWidget(label_est_buy, 2, 3)
-        self.lineEdit_default_est_buy = QLineEdit()
+        layout_parameter.addWidget(label_est_buy, 1, 3)
+        self.lineEdit_default_est_buy = QLineEdit('0')
         self.lineEdit_default_est_buy.setReadOnly(True)
-        layout_parameter.addWidget(self.lineEdit_default_est_buy, 2, 4)
+        layout_parameter.addWidget(self.lineEdit_default_est_buy, 1, 4)
         label_est_buy_post = QLabel('元')
-        layout_parameter.addWidget(label_est_buy_post, 2, 5)
+        layout_parameter.addWidget(label_est_buy_post, 1, 5)
+
+        label_est_sell = QLabel('預估賣出金額:')
+        layout_parameter.addWidget(label_est_sell, 2, 3)
+        self.lineEdit_default_est_sell = QLineEdit('0')
+        self.lineEdit_default_est_sell.setReadOnly(True)
+        layout_parameter.addWidget(self.lineEdit_default_est_sell, 2, 4)
+        label_est_sell_post = QLabel('元')
+        layout_parameter.addWidget(label_est_sell_post, 2, 5)
 
         label_est_pnl = QLabel('預估賣出損益:')
         layout_parameter.addWidget(label_est_pnl, 3, 3)
-        self.lineEdit_default_est_pnl = QLineEdit()
+        self.lineEdit_default_est_pnl = QLineEdit('0')
         self.lineEdit_default_est_pnl.setReadOnly(True)
         layout_parameter.addWidget(self.lineEdit_default_est_pnl, 3, 4)
         label_est_pnl_post = QLabel('元')
         layout_parameter.addWidget(label_est_pnl_post, 3, 5)
 
+        label_exe_buy = QLabel('執行買進金額:')
+        layout_parameter.addWidget(label_exe_buy, 1, 6)
+        self.lineEdit_default_exe_buy = QLineEdit('0')
+        self.lineEdit_default_exe_buy.setReadOnly(True)
+        layout_parameter.addWidget(self.lineEdit_default_exe_buy, 1, 7)
+        label_exe_buy_post = QLabel('元')
+        layout_parameter.addWidget(label_exe_buy_post, 1, 8)
+
+        label_exe_sell = QLabel('執行賣出金額:')
+        layout_parameter.addWidget(label_exe_sell, 2, 6)
+        self.lineEdit_default_est_sell = QLineEdit('0')
+        self.lineEdit_default_est_sell.setReadOnly(True)
+        layout_parameter.addWidget(self.lineEdit_default_est_sell, 2, 7)
+        label_exe_sell_post = QLabel('元')
+        layout_parameter.addWidget(label_exe_sell_post, 2, 8)
+
+        label_exe_pnl = QLabel('執行賣出損益:')
+        layout_parameter.addWidget(label_exe_pnl, 3, 6)
+        self.lineEdit_default_exe_pnl = QLineEdit('0')
+        self.lineEdit_default_exe_pnl.setReadOnly(True)
+        layout_parameter.addWidget(self.lineEdit_default_exe_pnl, 3, 7)
+        label_exe_pnl_post = QLabel('元')
+        layout_parameter.addWidget(label_exe_pnl_post, 3, 8)
+
         # 啟動按鈕
         self.button_start = QPushButton('開始下單')
         self.button_start.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.MinimumExpanding)
         self.button_start.setStyleSheet("QPushButton { font-size: 24px; font-weight: bold; }")
-        layout_parameter.addWidget(self.button_start, 1, 6, 3, 1)
+        layout_parameter.addWidget(self.button_start, 1, 9, 3, 2)
 
         # 停止按鈕
         self.button_stop = QPushButton('停止下單')
         self.button_stop.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.MinimumExpanding)
         self.button_stop.setStyleSheet("QPushButton { font-size: 24px; font-weight: bold; }")
-        layout_parameter.addWidget(self.button_stop, 1, 6, 3, 1)
+        layout_parameter.addWidget(self.button_stop, 1, 9, 3, 1)
         self.button_stop.setVisible(False)
 
         # 模擬區layout設定
@@ -128,18 +191,521 @@ class MainApp(QWidget):
 
         self.setLayout(layout)
 
+        my_target_path = None
+        my_target_list_file = Path("./target_list_path.pkl")
+        if my_target_list_file.is_file():
+            with open('./target_list_path.pkl', 'rb') as f:
+                temp_dict = pickle.load(f)
+                my_target_path = temp_dict['target_list_path']
+
+        # Open the file dialog to select a file
+        if my_target_path:
+            self.lineEdit_default_file_path.setText(my_target_path)
+
         self.print_log("login success, 現在使用帳號: {}".format(self.active_account.account))
         self.print_log("建立行情連線...")
-        sdk.init_realtime() # 建立行情連線
-        self.print_log("行情連線建立OK")
+
+        sdk.init_realtime(Mode.Normal) # 建立買進行情連線
         self.reststock = sdk.marketdata.rest_client.stock
-        self.wsstock = sdk.marketdata.websocket_client.stock
+        self.buy_websocket = sdk.marketdata.websocket_client.stock
+
+        sdk.init_realtime(Mode.Normal) # 建立賣出行情連線
+        self.sell_websocket = sdk.marketdata.websocket_client.stock
+
+        # table slot connect
+        self.new_pos_table.itemChanged.connect(self.on_item_changed)
+
+        # button slot connect
+        self.folder_btn.clicked.connect(self.showDialog)
+        self.read_csv_btn.clicked.connect(self.read_target_list)
+        self.simulate_cal_btn.clicked.connect(self.buy_trial_calculate)
+        self.button_start.clicked.connect(self.order_start)
+        self.button_fake_buy_filled.clicked.connect(self.fake_buy_filled)
+
+        # signal slot connect
+        self.communicator = Communicate()
+        self.communicator.print_log_signal.connect(self.print_log)
+        self.communicator.new_table_item_update_signal.connect(self.new_table_item_update)
+        self.communicator.cur_table_item_update_signal.connect(self.cur_table_item_update)
+
+        # default parameter
+        self.total_budget = 0
+        self.single_budget = 0
+        self.epsilon = 0.000001
+        self.hold_pos_dict = {}
+        my_pos_dict_path = Path("./hold_position.pkl")
+        if my_pos_dict_path.is_file():
+            with open('./hold_position.pkl', 'rb') as f:
+                self.hold_pos_dict = pickle.load(f)
+
+        self.new_table_row_idx_map = {}
+        self.new_table_col_idx_map = dict(zip(self.new_pos_header, range(len(self.new_pos_header))))
+        self.subscribed_buy_ids = {}
+
+        self.cur_table_row_idx_map = {}
+        self.cur_table_col_idx_map = dict(zip(self.cur_pos_header, range(len(self.cur_pos_header))))
+        self.subscribed_sell_ids = {}
+
+        self.buy_websocket.on("connect", self.handle_buy_connect)
+        self.buy_websocket.on("disconnect", self.handle_buy_disconnect)
+        self.buy_websocket.on("error", self.handle_buy_error)
+        self.buy_websocket.on('message', self.handle_buy_message)
+        self.buy_websocket.connect()
+        self.print_log("WebSocket連線成功(buy)")
+
+        self.sell_websocket.on("connect", self.handle_sell_connect)
+        self.sell_websocket.on("disconnect", self.handle_sell_disconnect)
+        self.sell_websocket.on("error", self.handle_sell_error)
+        self.sell_websocket.on('message', self.handle_sell_message)
+        self.sell_websocket.connect()
+        self.print_log("WebSocket連線成功(sell)")
+
+        sdk.set_on_filled(self.on_filled)
+        self.cur_pos_table_init()
+
+    def cur_pos_table_init(self):
+        if len(self.hold_pos_dict) == 0:
+            return
+
+        for key, value in self.hold_pos_dict.items():
+            symbol = key
+            ticker_res = self.reststock.intraday.ticker(symbol=symbol)
+            stock_name = value['stock_name']
+
+            # print(symbol, stock_name)
+            row = self.cur_pos_table.rowCount()
+            self.cur_pos_table.insertRow(row)
+
+            # self.cur_pos_header = ['股票名稱', '股票代號', '庫存股數', '庫存均價', '現價', '損益試算', '獲利率%', '委託數量', '委託價格', '成交數量', '成交價格']           
+            for j in range(len(self.cur_pos_header)):
+                item = QTableWidgetItem()
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                if self.cur_pos_header[j] == '股票名稱':
+                    item.setText(stock_name)
+                    self.cur_pos_table.setItem(row, j, item)
+                elif self.cur_pos_header[j] == '股票代號':
+                    item.setText(symbol)
+                    self.cur_pos_table.setItem(row, j, item)
+                elif self.cur_pos_header[j] == '庫存股數':
+                    item.setText(str(value['hold_qty']))
+                    self.cur_pos_table.setItem(row, j, item)
+                elif self.cur_pos_header[j] == '庫存均價':
+                    item.setText(str(value['avg_price']))
+                    self.cur_pos_table.setItem(row, j, item)
+                elif self.cur_pos_header[j] == '現價':
+                    item.setText('-')
+                    self.cur_pos_table.setItem(row, j, item)
+                elif self.cur_pos_header[j] == '損益試算':
+                    item.setText('-')
+                    self.cur_pos_table.setItem(row, j, item)
+                elif self.cur_pos_header[j] == '獲利率%':
+                    item.setText('-')
+                    self.cur_pos_table.setItem(row, j, item)
+                elif self.cur_pos_header[j] == '委託數量':
+                    item.setText('-')
+                    self.cur_pos_table.setItem(row, j, item)
+                elif self.cur_pos_header[j] == '委託價格':
+                    item.setText(str(ticker_res['limitDownPrice']))
+                    item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEditable | Qt.ItemIsEnabled)
+                    self.cur_pos_table.setItem(row, j, item)
+                elif self.cur_pos_header[j] == '成交數量':
+                    item.setText('-')
+                    self.cur_pos_table.setItem(row, j, item)
+                elif self.cur_pos_header[j] == '成交價格':
+                    item.setText('-')
+                    self.cur_pos_table.setItem(row, j, item)
+
+            self.cur_table_row_idx_map[symbol] = row
+
+            if symbol not in self.subscribed_sell_ids:
+                self.sell_websocket.subscribe({
+                    'channel': 'trades',
+                    'symbol': symbol
+                })
+
+    def fake_buy_filled(self):
+        for i in range(0, self.new_pos_table.rowCount()):
+            symbol = self.new_pos_table.item(i, self.new_table_col_idx_map['股票代號']).text()
+            buy_order_qty = self.new_pos_table.item(i, self.new_table_col_idx_map['委託數量']).text()
+            buy_order_price = self.new_pos_table.item(i, self.new_table_col_idx_map['委託價格']).text()
+
+            if int(buy_order_qty) > 0:
+                buy_filled = fake_filled_data()
+                buy_filled.stock_no = symbol
+                buy_filled.buy_sell = BSAction.Buy
+                buy_filled.filled_qty = int(buy_order_qty)
+                buy_filled.filled_price = float(buy_order_price)
+                buy_filled.filled_avg_price = float(buy_order_price)
+                buy_filled.user_def = 'sw_buy'
+                self.on_filled(None, buy_filled)
+
+    # 主動回報，根據成交數據維護GUI表格及cur_host_table
+    def on_filled(self, err, content):
+        print('filled recived:', content.stock_no, content.buy_sell)
+        print('content:', content)
+        if content.account == self.active_account.account:
+            if content.user_def == 'sw_buy':
+                row = self.new_table_row_idx_map[content.stock_no]
+                cur_filled_qty = self.new_pos_table.item(row, self.new_table_col_idx_map['成交數量']).text()
+                update_qty = content.filled_qty
+                avg_filled_price = content.filled_avg_price
+
+                if cur_filled_qty != '-':
+                    if int(cur_filled_qty) > 0:
+                        update_qty += int(cur_filled_qty)
+                
+                stock_name = self.new_pos_table.item(row, self.new_table_col_idx_map['股票名稱']).text()
+                if content.stock_no in self.hold_pos_dict:
+                    pos_record = self.hold_pos_dict[content.stock_no]
+                    pos_record['hold_qty'] += content.filled_qty
+                    pos_record['avg_price'] = ((pos_record['avg_price']*pos_record['hold_qty'])+(content.filled_qty*avg_filled_price))/(pos_record['hold_qty']+update_qty)
+                    pos_record['avg_price'] = round(pos_record['avg_price']+self.epsilon, 2)
+                    self.hold_pos_dict[content.stock_no] = pos_record
+                else:
+                    pos_record = {'stock_name': stock_name, 'hold_qty': update_qty, 'avg_price': avg_filled_price}
+                    self.hold_pos_dict[content.stock_no] = pos_record
+
+                self.communicator.new_table_item_update_signal.emit(row, self.new_table_col_idx_map['成交數量'], str(update_qty))
+                self.communicator.new_table_item_update_signal.emit(row, self.new_table_col_idx_map['成交價格'], str(avg_filled_price))
+                print(self.hold_pos_dict)
+            elif content.user_def == 'sw_sell':
+                pass
+    
+    def buy_limit_order(self, stock_symbol, order_price, buy_qty, swing_bs='sw_buy'):
+        order = Order(
+            buy_sell = BSAction.Buy,
+            symbol = stock_symbol,
+            price =  str(order_price),
+            quantity = int(buy_qty),
+            market_type = MarketType.Common,
+            price_type = PriceType.Limit,
+            time_in_force = TimeInForce.ROD,
+            order_type = OrderType.Stock,
+            user_def = swing_bs # optional field
+        )
+
+        order_res = sdk.stock.place_order(self.active_account, order)
+        return order_res
+
+    def order_start(self):
+        for i in range(0, self.new_pos_table.rowCount()):
+            symbol = self.new_pos_table.item(i, self.new_table_col_idx_map['股票代號']).text()
+            buy_order_qty = self.new_pos_table.item(i, self.new_table_col_idx_map['委託數量']).text()
+            buy_order_price = self.new_pos_table.item(i, self.new_table_col_idx_map['委託價格']).text()
+
+            if int(buy_order_qty) > 0:
+                buy_order_res = self.buy_limit_order(symbol, buy_order_price, buy_order_qty, 'sw_buy')
+                if buy_order_res.is_success:
+                    self.communicator.print_log_signal.emit(symbol+' 買進委託成功, 委託價格: '+buy_order_price+', 委託數量:'+buy_order_qty)
+                else:
+                    self.communicator.print_log_signal.emit(symbol+' 委託失敗')
+                    self.communicator.print_log_signal.emit(buy_order_res.message)
+
+    def update_est_buy(self):
+        est_buy_total = 0
+        for i in range(0, self.new_pos_table.rowCount()):
+            buy_order_qty = self.new_pos_table.item(i, self.new_table_col_idx_map['委託數量']).text()
+            buy_order_price = self.new_pos_table.item(i, self.new_table_col_idx_map['委託價格']).text()
+
+            est_buy_total += math.ceil(float(buy_order_qty)*float(buy_order_price))
+        self.lineEdit_default_est_buy.setText(str(est_buy_total))
+
+    def on_item_changed(self, item):
+        row = item.row()
+        col = item.column()
+        if col == self.new_table_col_idx_map['委託價格']:
+            new_order_price = float(item.text())
+            new_order_qty = self.single_budget//(new_order_price*1000)*1000
+            self.new_pos_table.item(row, self.new_table_col_idx_map['委託數量']).setText(str(int(new_order_qty)))
+            self.update_est_buy()
+
+    # 更新表格內某一格值的slot function
+    def cur_table_item_update(self, row, col, value):
+        try:
+            self.cur_pos_table.item(row, col).setText(value)
+            # print(row, col, value)
+        except Exception as e:
+            print(e, row, col, value)
+
+    # 更新表格內某一格值的slot function
+    def new_table_item_update(self, row, col, value):
+        try:
+            self.new_pos_table.item(row, col).setText(value)
+            # print(row, col, value)
+        except Exception as e:
+            print(e, row, col, value)
+
+    def sell_trail_calculate(self):
+        if self.cur_pos_table.rowCount() == 0:
+            return
+
+    def read_target_list(self):
+        print('new table subscribed ids', self.subscribed_buy_ids)
+        if len(self.subscribed_buy_ids) > 0:
+            for key in list(self.subscribed_buy_ids.keys()):
+                print('取消訂閱', self.subscribed_buy_ids[key])
+                self.buy_websocket.unsubscribe({'id':self.subscribed_buy_ids[key]})
+            self.new_table_row_idx_map = {}
+        self.new_pos_table.clearContents()
+        self.new_pos_table.setRowCount(0)
         
+        buy_target_path = Path(self.lineEdit_default_file_path.text())
+        # print(buy_target_path)
+        if str(buy_target_path) == '.':
+            self.communicator.print_log_signal('請輸入正確檔案路徑')
+        else:
+            try:
+                self.buy_target = pd.read_csv(buy_target_path)
+            except UnicodeDecodeError as e:
+                print("uff-8 fail, try cp950...", e)
+                self.buy_target = pd.read_csv(buy_target_path, encoding='cp950', skiprows=3)
+            # print(self.buy_target)
+            self.new_pos_table.blockSignals(True)
+            for i in range(self.buy_target.shape[0]):
+                symbol = self.buy_target.iloc[i, 1].replace('.TW', '')
+                ticker_res = self.reststock.intraday.ticker(symbol=symbol)
+                stock_name = self.buy_target.iloc[i, 2]
+
+                # print(symbol, stock_name)
+                row = self.new_pos_table.rowCount()
+                self.new_pos_table.insertRow(row)
+
+                # ['股票名稱', '股票代號', '現價', '委託數量', '委託價格', '成交數量', '成交價格']            
+                for j in range(len(self.new_pos_header)):
+                    item = QTableWidgetItem()
+                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                    if self.new_pos_header[j] == '股票名稱':
+                        item.setText(stock_name)
+                        self.new_pos_table.setItem(row, j, item)
+                    elif self.new_pos_header[j] == '股票代號':
+                        item.setText(symbol)
+                        self.new_pos_table.setItem(row, j, item)
+                    elif self.new_pos_header[j] == '現價':
+                        item.setText('-')
+                        self.new_pos_table.setItem(row, j, item)
+                    elif self.new_pos_header[j] == '委託數量':
+                        item.setText('-')
+                        self.new_pos_table.setItem(row, j, item)
+                    elif self.new_pos_header[j] == '委託價格':
+                        item.setText(str(ticker_res['limitUpPrice']))
+                        item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEditable | Qt.ItemIsEnabled)
+                        self.new_pos_table.setItem(row, j, item)
+                    elif self.new_pos_header[j] == '成交數量':
+                        item.setText('-')
+                        self.new_pos_table.setItem(row, j, item)
+                    elif self.new_pos_header[j] == '成交價格':
+                        item.setText('-')
+                        self.new_pos_table.setItem(row, j, item)
+
+                self.new_table_row_idx_map[symbol] = row
+
+                if symbol not in self.subscribed_buy_ids:
+                    self.buy_websocket.subscribe({
+                        'channel': 'trades',
+                        'symbol': symbol
+                    })
+
+            self.new_pos_table.blockSignals(False)
+           
+    def buy_trial_calculate(self):
+        new_pos_table_rows = self.new_pos_table.rowCount()
+        # print('buy_trial', new_pos_table_rows)
+        if new_pos_table_rows==0:
+            self.communicator.print_log_signal.emit('目標清單為空，只執行賣出')
+            return
+        else:
+            self.total_budget = float(self.lineEdit_default_total_amount.text())*10000
+            self.single_budget = self.total_budget//self.buy_target.shape[0]
+            est_buy_total = 0
+
+            for row in range(new_pos_table_rows):
+                symbol = self.new_pos_table.item(row, self.new_table_col_idx_map['股票代號']).text()
+                order_price = float(self.new_pos_table.item(row, self.new_table_col_idx_map['委託價格']).text())
+                order_qty = int(self.single_budget//(order_price*1000)*1000)
+
+                if symbol in self.cur_table_row_idx_map:
+                    cur_qty = int(self.cur_pos_table.item(self.cur_table_row_idx_map[symbol], self.cur_table_col_idx_map['庫存股數']).text())
+                    order_qty = order_qty-cur_qty
+                    if order_qty>=0:
+                        self.print_log(symbol+' 已存在，減少買單: '+str(cur_qty)+'，預計買入: '+str(order_qty))
+                
+                if order_qty > 0:
+                    self.new_pos_table.item(row, self.new_table_col_idx_map['委託數量']).setText(str(int(order_qty)))
+                    est_buy_total += math.ceil(order_qty*order_price)
+                else:
+                    self.new_pos_table.item(row, self.new_table_col_idx_map['委託數量']).setText('0')
+
+            self.lineEdit_default_est_buy.setText(str(est_buy_total))
+
+    def handle_sell_message(self, message):
+        msg = json.loads(message)
+        event = msg["event"]
+        data = msg["data"]
+        # print(event, data)
+        
+        # subscribed事件處理
+        if event == "subscribed":
+            id = data["id"]
+            symbol = data["symbol"]
+            self.communicator.print_log_signal.emit('訂閱成功...'+symbol)
+            self.subscribed_sell_ids[symbol] = id
+        
+        elif event == "unsubscribed":
+            for key, value in self.subscribed_sell_ids.items():
+                if value == data["id"]:
+                    print(key, value)
+                    remove_key = key
+            self.subscribed_sell_ids.pop(remove_key)
+            self.communicator.print_log_signal.emit(remove_key+"...成功移除訂閱")
+        
+        elif event == 'snapshot':
+            symbol = data['symbol']
+
+            if 'price' in data:
+                row = self.cur_table_row_idx_map[symbol]
+                cur_price = data['price']
+                avg_price = float(self.cur_pos_table.item(row, self.cur_table_col_idx_map['庫存均價']).text())
+                hold_qty = int(self.cur_pos_table.item(row, self.cur_table_col_idx_map['庫存股數']).text())
+
+                self.communicator.cur_table_item_update_signal.emit(row, self.cur_table_col_idx_map['現價'], str(cur_price))
+                cur_pnl = (cur_price - avg_price)*hold_qty
+                cur_percent = cur_pnl/(avg_price*hold_qty)*100
+                self.communicator.cur_table_item_update_signal.emit(row, self.cur_table_col_idx_map['損益試算'], str(int(round(cur_pnl, 0))))
+                self.communicator.cur_table_item_update_signal.emit(row, self.cur_table_col_idx_map['獲利率%'], str(round(cur_percent, 2))+'%')
+
+        # data事件處理
+        elif event == "data":
+            if 'isTrial' in data:
+                if data['isTrial']:
+                    return
+            
+            symbol = data['symbol']
+
+            if symbol not in self.cur_table_row_idx_map:
+                return
+            
+            if 'price' in data:
+                row = self.cur_table_row_idx_map[symbol]
+                cur_price = data['price']
+                avg_price = float(self.cur_pos_table.item(row, self.cur_table_col_idx_map['庫存均價']).text())
+                hold_qty = int(self.cur_pos_table.item(row, self.cur_table_col_idx_map['庫存股數']).text())
+
+                self.communicator.cur_table_item_update_signal.emit(row, self.cur_table_col_idx_map['現價'], str(cur_price))
+                cur_pnl = (cur_price - avg_price)*hold_qty
+                cur_percent = cur_pnl/(avg_price*hold_qty)*100
+                self.communicator.cur_table_item_update_signal.emit(row, self.cur_table_col_idx_map['損益試算'], str(int(round(cur_pnl, 0))))
+                self.communicator.cur_table_item_update_signal.emit(row, self.cur_table_col_idx_map['獲利率%'], str(round(cur_percent, 2))+'%')
+            else:
+                return
+
+    def handle_sell_connect(self):
+        self.communicator.print_log_signal.emit('sell market data connected')
+    
+    def handle_sell_disconnect(self, code, message):
+        self.communicator.print_log_signal.emit(f'sell market data disconnect: {code}, {message}')
+    
+    def handle_sell_error(self, error):
+        self.communicator.print_log_signal.emit(f'sell market data error: {error}')
+
+    def handle_buy_message(self, message):
+        msg = json.loads(message)
+        event = msg["event"]
+        data = msg["data"]
+        # print(event, data)
+        
+        # subscribed事件處理
+        if event == "subscribed":
+            id = data["id"]
+            symbol = data["symbol"]
+            self.communicator.print_log_signal.emit('訂閱成功(buy)...'+symbol)
+            self.subscribed_buy_ids[symbol] = id
+        
+        elif event == "unsubscribed":
+            for key, value in self.subscribed_buy_ids.items():
+                if value == data["id"]:
+                    print('pop', key, value)
+                    remove_key = key
+            self.subscribed_buy_ids.pop(remove_key)
+            self.communicator.print_log_signal.emit(remove_key+"...成功移除訂閱(buy)")
+        
+        elif event == 'snapshot':
+            symbol = data['symbol']
+
+            if 'price' in data:
+                cur_price = data['price']
+                self.communicator.new_table_item_update_signal.emit(self.new_table_row_idx_map[symbol], self.new_table_col_idx_map['現價'], str(cur_price))
+
+        # data事件處理
+        elif event == "data":
+            if 'isTrial' in data:
+                if data['isTrial']:
+                    return
+            
+            symbol = data['symbol']
+
+            if symbol not in self.new_table_row_idx_map:
+                return
+            
+            if 'price' in data:
+                cur_price = data['price']
+                self.communicator.new_table_item_update_signal.emit(self.new_table_row_idx_map[symbol], self.new_table_col_idx_map['現價'], str(cur_price))
+            else:
+                return
+
+    def handle_buy_connect(self):
+        self.communicator.print_log_signal.emit('buy market data connected')
+    
+    def handle_buy_disconnect(self, code, message):
+        self.communicator.print_log_signal.emit(f'buy market data disconnect: {code}, {message}')
+    
+    def handle_buy_error(self, error):
+        self.communicator.print_log_signal.emit(f'buy market data error: {error}')
+
+    def showDialog(self):
+        my_target_path = None
+        my_target_list_file = Path("./target_list_path.pkl")
+        if my_target_list_file.is_file():
+            with open('./target_list_path.pkl', 'rb') as f:
+                temp_dict = pickle.load(f)
+                my_target_path = temp_dict['target_list_path']
+
+        # Open the file dialog to select a file
+        if my_target_path:
+            file_path, _ = QFileDialog.getOpenFileName(self, '請選擇您的憑證檔案', my_target_path, 'All Files (*)')
+        else:
+            file_path, _ = QFileDialog.getOpenFileName(self, '請選擇您的憑證檔案', 'C:\\', 'All Files (*)')
+
+        if file_path:
+            self.lineEdit_default_file_path.setText(file_path)
+            temp_dict = {
+                'target_list_path': file_path
+            }
+            with open('target_list_path.pkl', 'wb') as f:
+                pickle.dump(temp_dict, f)
+
 
     # 更新最新log到QPlainTextEdit的slot function
     def print_log(self, log_info):
         self.log_text.appendPlainText(log_info)
         self.log_text.moveCursor(QTextCursor.End)
+
+    # 視窗關閉時要做的事，主要是關websocket連結
+    def closeEvent(self, event):
+        # do stuff
+        self.print_log("saving position...")
+        with open('hold_position.pkl', 'wb') as f:
+            pickle.dump(self.hold_pos_dict, f)
+        
+        self.print_log("disconnect websocket...")
+        self.buy_websocket.disconnect()
+        self.sell_websocket.disconnect()
+        sdk.logout()
+
+        can_exit = True
+        if can_exit:
+            event.accept() # let the window close
+        else:
+            event.ignore()
 
 if __name__ == "__main__":
     try:
