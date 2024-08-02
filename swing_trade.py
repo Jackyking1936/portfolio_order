@@ -802,9 +802,9 @@ class MainApp(QWidget):
 
         # Open the file dialog to select a file
         if my_target_path:
-            file_path, _ = QFileDialog.getOpenFileName(self, '請選擇您的憑證檔案', my_target_path, 'All Files (*)')
+            file_path, _ = QFileDialog.getOpenFileName(self, '請選擇您的下單目標清單', my_target_path, 'All Files (*)')
         else:
-            file_path, _ = QFileDialog.getOpenFileName(self, '請選擇您的憑證檔案', 'C:\\', 'All Files (*)')
+            file_path, _ = QFileDialog.getOpenFileName(self, '請選擇您的下單目標清單', 'C:\\', 'All Files (*)')
 
         if file_path:
             self.lineEdit_default_file_path.setText(file_path)

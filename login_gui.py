@@ -72,6 +72,7 @@ class LoginForm(QWidget):
         layout_all.addLayout(layout)
         self.setLayout(layout_all)
         
+        folder_btn.clicked.connect(self.showDialog)
         login_btn.clicked.connect(self.check_password)
         
         my_file = Path("./info.pkl")
