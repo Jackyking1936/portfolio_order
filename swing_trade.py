@@ -526,10 +526,15 @@ class MainApp(QWidget):
 
     def read_target_list(self):
         print('new table subscribed ids', self.subscribed_buy_ids)
+        
         if len(self.subscribed_buy_ids) > 0:
+            self.print_log('deleting buy table...')
             for key in list(self.subscribed_buy_ids.keys()):
                 print('取消訂閱', self.subscribed_buy_ids[key])
                 self.buy_websocket.unsubscribe({'id':self.subscribed_buy_ids[key]})
+            while self.subscribed_buy_ids:
+                # print('deleting buy target...')
+                pass
             self.new_table_row_idx_map = {}
         self.new_pos_table.clearContents()
         self.new_pos_table.setRowCount(0)
