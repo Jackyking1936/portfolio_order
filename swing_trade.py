@@ -48,7 +48,7 @@ class MainApp(QWidget):
         my_icon = QIcon()
         my_icon.addFile('swing.png') 
         self.setWindowIcon(my_icon)
-        self.setWindowTitle("Python波段單下單機")
+        self.setWindowTitle("Python自動換股小幫手(教學範例，使用前請先了解相關內容)")
         self.resize(1200, 700)
 
         # 製作上下排列layout上為庫存表，下為log資訊
